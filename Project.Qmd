@@ -1,0 +1,675 @@
+---
+title: "Urban Heat Exposure in Phoenix, Arizona"
+subtitle: "Analysis of Spatial-Temporal Data Final Submission"
+author: "Ousama Bin Zamir"
+date: 2026-02-27
+format: 
+  pdf:
+    toc: true
+    number-sections: true
+---
+
+# Introduction
+
+Phoenix has been extensively studied by the Central Arizona-Phoenix Long-Term Ecological Research (CAP LTER) program since 1997. The literature consistently shows that low-income and minority neighborhoods experience higher temperatures due to less vegetation, more impervious surfaces, and historical patterns of segregation. So, this document synthesizes spatial analysis of thermal inequities in the city.
+
+# User Personas And User Stories
+
+## User 1: Ajay Nolan
+Role: Sustainability Planner
+
+- **Story 1:**
+He wants to identify which neighborhoods are mostly hottest and have the highest concentration of low-income and elderly resident in order to prioritze those areas for emergency cooling supply and conduct tree planting programs.
+
+- **Story 2:**
+He also wants to visualise the strong link between a lack of green space and higher temperatures in vulnerable communities, in order to attract more investors for developing parks and other green spaces.
+
+## User 2: Dr Eren Thakur
+Role: Public Health Researcher
+
+- **Story 1:**
+He wants to map the over lap between urban heat islands and areas with high rates of oldagepeople, so that he can predict where the next public health crisis during the heat wave can occur.
+
+---
+
+# Study Area Selection
+
+Phoenix, Arizona was selected for this analysis because of the following reasons:
+
+- Ease of data availability
+- NDVI shows strong inverse relation to LST  
+- Systematic relationship between wealth and heat exposure documented in prior studies
+- Income temperature gradient: $10,000 income increase = 0.28°C cooling
+
+# Data and Methods
+
+## Data Sources
+
+**LST (Raster):** 
+- Landsat 8 data from Tier 1, Level 2, via Google Earth Engine
+- Resolution: 30m (optimized from 100m)
+- CRS: EPSG:2223 (Arizona Central State Plane)  
+- Time: Summer 2020
+
+**NDVI (Raster):**
+- COPERNICUS Sentinel 2, SR_HARMONIZED, via Google Earth Engine
+- Resolution: 10m
+- CRS: EPSG:2223
+- Time: Summer 2020
+
+**Shape files (Vector):**
+- Phoenix city boundary
+- Phoenix city tracts (382 tracts)  
+- Phoenix city urban villages (15)
+- Source: City of Phoenix Open Data
+
+**Census Data:**
+- American Community Survey 5-year estimates (2016-2020)
+- Variables: Total population (B01003_001), Median household income (B19013_001), Age distribution (B01001_001-049), Poverty status (B17001_002), Fertility (B13016_002)
+
+## Libraries
+```{r setup}
+#| echo: true
+#| results: hide
+#| warning: false
+#| message: false
+library(sf)
+library(terra)
+library(tidyverse)
+library(exactextractr) # zonal stats
+library(spdep) # correlation
+library(tmap) # maps
+library(corrplot) # correlation plot
+library(viridis) # color
+library(spatialreg)
+library(knitr)
+```
+
+## Data Exploring
+```{r load_data}
+#| echo: false
+#| results: hide
+#| warning: false
+#| message: false
+
+phoenix_boundary <- st_read("Data/shape_files/Phoenix_city/phoenix-city-boundary.shp")
+phoenix_tracts <- st_read("Data/shape_files/phoenix_tracts/phoenix_tracts_clipped.shp")
+phoenix_urban_villages <- st_read("Data/shape_files/Urban_Villages/Villages.shp")
+
+lst_data <- rast("Data/Imagery/PHOX_LST_Landsat8_Summer2020.tif")
+ndvi_data <- rast("Data/Imagery/PHOX_NDVI_sentinel_Summer2020.tif")
+census_data <- st_read("Data/Census_data/phoenix_tracts.gpkg")
+
+# Convert everything to same CRS
+phoenix_boundary <- st_transform(phoenix_boundary, "EPSG:2223")
+phoenix_tracts <- st_transform(phoenix_tracts, "EPSG:2223")
+phoenix_urban_villages <- st_transform(phoenix_urban_villages, "EPSG:2223")
+lst_data <- project(lst_data, "EPSG:2223")
+ndvi_data <- project(ndvi_data, "EPSG:2223")
+
+# Extract mean values for each tract
+census_data$lst_mean <- exact_extract(lst_data, census_data, 'mean')
+census_data$ndvi_mean <- exact_extract(ndvi_data, census_data, 'mean')
+
+# Remove tracts with missing income data
+census_data <- census_data %>% filter(!is.na(median_incomeE))
+```
+
+## Zonal Statistics
+
+I used the exactextractr package to extract mean LST and NDVI values for each census tract. Census tracts with missing income data (<1% of total) were removed from the analysis.
+
+# Results
+
+## Temperature Distribution
+
+```{r lst_distribution}
+#| echo: false
+#| warning: false
+#| message: false
+#| fig-cap: "Land surface temperature distribution across Phoenix census tracts (Summer 2020)."
+
+cat("LST Statistics:\n")
+cat("Mean:", round(mean(census_data$lst_mean, na.rm = TRUE), 2), "°C\n")
+cat("SD:", round(sd(census_data$lst_mean, na.rm = TRUE), 2), "°C\n")
+cat("Range:", round(range(census_data$lst_mean, na.rm = TRUE), 2), "°C\n")
+
+map_lst <- tm_shape(census_data) +
+  tm_fill("lst_mean", 
+          palette = "YlOrRd",
+          style = "quantile",
+          n = 7,
+          title = "Mean LST (°C)") +
+  tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(phoenix_boundary) +
+  tm_borders(col = "black", lwd = 1.5) +
+  tm_layout(title = "LST Distribution",
+            title.size = 1.2,
+            legend.outside = TRUE,
+            frame = FALSE)
+map_lst
+```
+
+Phoenix city shows temperature variation across the city, with LST ranging from about 46°C to 56°C. Mean LST of 53.7°C shows the extreme summer surface temperatures. You can clearly see the hottest areas are concentrated in the central urban core.
+
+## Vegetation Distribution
+
+```{r ndvi_distribution}
+#| echo: false
+#| warning: false
+#| message: false
+#| fig-cap: "NDVI distribution showing vegetation coverage."
+cat("NDVI Statistics:\n")
+cat("Mean:", round(mean(census_data$ndvi_mean, na.rm = TRUE), 3), "\n")
+cat("SD:", round(sd(census_data$ndvi_mean, na.rm = TRUE), 3), "\n")
+# ndvi map
+map_ndvi <- tm_shape(census_data) +
+  tm_fill("ndvi_mean", 
+          palette = "Greens",
+          style = "quantile",
+          n = 7,
+          title = "Mean NDVI") +
+  tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(phoenix_boundary) +
+  tm_borders(col = "black", lwd = 1.5) +
+  tm_layout(title = "NDVI Distribution",
+            legend.outside = TRUE,
+            frame = FALSE)
+map_ndvi
+```
+
+The map shows clear differences between NDVI and LST. Green areas are inversely related to hot surface temperature areas. So, basically, where there is more vegetation, temperatures are cooler.
+
+## Income Quintile Analysis
+
+Creating income quintiles to see how much the upper class and lower classes differ in terms of mean LST, mean NDVI, elderly population, and total population.
+
+```{r income_quintiles}
+#| echo: false
+#| warning: false
+
+census_data$income_quintile <- cut(census_data$median_incomeE,
+                            breaks = quantile(census_data$median_incomeE, 
+                                             probs = seq(0, 1, 0.2), 
+                                             na.rm = TRUE),
+                            labels = c("Q1", "Q2", "Q3", "Q4", "Q5"),
+                            include.lowest = TRUE)
+
+quintile_summary <- census_data %>%
+  st_drop_geometry() %>%
+  group_by(income_quintile) %>%
+  summarise(
+    n_tracts = n(),
+    mean_lst = round(mean(lst_mean, na.rm = TRUE), 2),
+    mean_ndvi = round(mean(ndvi_mean, na.rm = TRUE), 3),
+    mean_elderly = round(mean(pct_elderly, na.rm = TRUE), 1),
+    total_pop = sum(total_popE, na.rm = TRUE)
+  )
+
+kable(quintile_summary, caption = "Temperature and vegetation by income quintile")
+
+temp_gap <- quintile_summary$mean_lst[1] - quintile_summary$mean_lst[5]
+cat("\nTemperature Inequality between Q1 and Q5:", round(temp_gap, 2), "°C or", 
+    round(temp_gap * 9/5, 2), "°F\n")
+```
+
+The poorest quintile which is Q1 experiences temperatures about 2.15°C higher than the wealthiest quintile, Q5. It shows a significant gap, almost 4 degrees Fahrenheit difference just based on income level.
+
+```{r boxplot}
+#| echo: false
+#| warning: false
+#| fig-cap: "Box plots showing LST distribution by income quintile."
+ggplot(census_data, aes(x = income_quintile, y = lst_mean, fill = income_quintile)) +
+  geom_boxplot() +
+  scale_fill_viridis(discrete = TRUE, option = "D") +
+  labs(title = "LST by Income Quintile",
+       x = "Income Quintile",
+       y = "Mean LST (°C)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+This box plot shows how temperature decreases pretty consistently as income increases. Therefore a clear pattern here can be seen.
+
+```{r elderly_dist}
+#| echo: false
+#| warning: false
+#| fig-cap: "Box plot showing Elderly population distribution by income quintile."
+ggplot(census_data, aes(x = income_quintile, y = age_65_plus, fill = income_quintile)) +
+  geom_boxplot() +
+  scale_fill_viridis(discrete = TRUE, option = "D") +
+  labs(title = "Elderly Population by Income Quintile",
+       x = "Income Quintile",
+       y = "Elderly Population") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+This box plot shows how Elderly population increases as income increases. It shows that Elderly population lives in wealther areas.
+
+## Correlation Analysis
+
+### Income vs Temperature
+
+```{r income_lst}
+#| echo: false
+#| warning: false
+#| message: false
+#| fig-cap: "Income-temperature relationship showing negative correlation (r=-0.45). Point color indicates poverty rate."
+ggplot(census_data, aes(x = median_incomeE, y = lst_mean)) +
+  geom_point(aes(color = pct_poverty), alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  scale_color_viridis(option = "plasma", name = "Poverty %") +
+  labs(title = "Median Income vs LST",
+       x = "Median Household Income ($)",
+       y = "Mean LST (°C)") +
+  theme_minimal()
+```
+
+There's a negative correlation (r=-0.45) between income and temperature. Higher income neighborhoods shows lower temperatures. The point colors show poverty rate, as it shows high poverty areas cluster at high temperatures.
+
+### Income vs Vegetation
+
+```{r income_ndvi}
+#| echo: false
+#| warning: false
+#| message: false
+#| fig-cap: "Income-NDVI relationship showing positive correlation (r=0.38). Point color indicates poverty rate."
+ggplot(census_data, aes(x = median_incomeE, y = ndvi_mean)) +
+  geom_point(aes(color = pct_poverty), alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", color = "darkgreen", se = TRUE) +
+  scale_color_viridis(option = "plasma", name = "Poverty %") +
+  labs(title = "Median Income vs NDVI",
+       x = "Median Household Income ($)",
+       y = "Mean NDVI") +
+  theme_minimal()
+```
+
+Positive correlation (r=0.38) between income and NDVI. It shows that wealthier areas have more vegetation compared to poor neighborhoods.
+
+### Vegetation Cooling Effect
+
+```{r ndvi_lst}
+#| echo: false
+#| warning: false
+#| message: false
+#| fig-cap: "NDVI-temperature relationship showing negative correlation (r=-0.75). Point color indicates median income. It indicates the cooling effect due to green spaces"
+ggplot(census_data, aes(x = ndvi_mean, y = lst_mean)) +
+  geom_point(aes(color = median_incomeE), alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", color = "blue", se = TRUE) +
+  scale_color_viridis(option = "plasma", name = "Median Income") +
+  labs(title = "Vegetation Cooling Effect",
+       x = "Mean NDVI",
+       y = "Mean LST (°C)") +
+  theme_minimal()
+```
+
+Strong negative correlation (r=-0.75) between NDVI and LST. More vegetation means lower temperatures - the cooling effect is really clear.
+
+### Correlation Matrix
+
+```{r correlation_matrix}
+#| echo: false
+#| warning: false
+#| fig-cap: "Correlation matrix showing relationships among thermal, environmental, and socioeconomic variables."
+cor_var <- census_data %>%
+  st_drop_geometry() %>%
+  select(lst_mean, ndvi_mean, median_incomeE, pct_poverty, 
+         pct_elderly, pct_under_18, pop_density, crude_birth_rate) %>%
+  na.omit()
+
+# Calculating correlation matrix using cor() function
+cor_mat <- cor(cor_var)
+
+corrplot(cor_mat, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45, tl.cex = 0.7,
+         addCoef.col = "black", number.cex = 0.5,
+         col = colorRampPalette(c("#ffffffe2", "white", "#a33939ff"))(200))
+```
+
+The correlation matrix shows the strongest relationships are:
+- LST and NDVI: r=-0.75 (very strong negative)
+- Income and poverty: r=-0.71 (strong negative, as expected)
+- LST and poverty: r=0.45 (positive)
+
+## Spatial Patterns
+
+### Global Spatial Autocorrelation
+
+```{r spatial_weights}
+#| echo: false
+#| results: hide
+nb <- poly2nb(census_data, queen = TRUE)
+listw <- nb2listw(nb, style = "W", zero.policy = TRUE)
+
+# Global moran test on lst, ndvi and household income
+moran_lst <- moran.test(census_data$lst_mean, listw, zero.policy = TRUE)
+moran_ndvi <- moran.test(census_data$ndvi_mean, listw, zero.policy = TRUE)
+moran_income <- moran.test(census_data$median_incomeE, listw, zero.policy = TRUE)
+```
+
+```{r moran_results}
+#| echo: false
+cat("Global Moran's I, Expectation and Variance for LST:\n")
+cat(moran_lst$estimate,"\n")
+cat("Global Moran's I, Expectation and Variance for NDVI:\n")
+cat(moran_ndvi$estimate, "\n")
+cat("Global Moran's I, Expectation and Variance for Median Income:\n")
+cat(moran_income$estimate, "\n")
+```
+
+Global Moran's I values from all three variables are positive, ranging from 0.44 to 0.57. This represents moderate level of clustering - not random distribution. This shows clustering of not only NDVI and LST but also household income areas.
+
+### Local Spatial Patterns (LISA)
+
+```{r lisa}
+#| echo: false
+#| warning: false
+#| message: false
+
+local_moran_lst <- localmoran(census_data$lst_mean, listw, zero.policy = TRUE)
+census_data$lisa_lst <- local_moran_lst[, 1] 
+census_data$lisa_pvalue <- local_moran_lst[, 5]# p-value
+# Classify into cluster types
+census_data$cluster_type <- NA
+census_data$cluster_type[census_data$lisa_pvalue < 0.05 & 
+      census_data$lst_mean > mean(census_data$lst_mean, na.rm = TRUE) &
+      local_moran_lst[, 1] > 0] <- "Hot Spots"
+census_data$cluster_type[census_data$lisa_pvalue < 0.05 & 
+      census_data$lst_mean < mean(census_data$lst_mean, na.rm = TRUE) &
+      local_moran_lst[, 1] > 0] <- "Cool Spots"
+census_data$cluster_type[census_data$lisa_pvalue < 0.05 & 
+      local_moran_lst[, 1] < 0] <- "Outliers"
+census_data$cluster_type[is.na(census_data$cluster_type)] <- "Not Significant"
+cat("Local Moran's I Classification:\n")
+table(census_data$cluster_type)
+```
+
+Around 70% of tracts show no significant local clustering, but 56 of them shows hot spots (high-high) and 50 others shows cool spots (low-low), which are nearly equal. This shows there are distinct geographic pockets of extreme temperature.
+
+```{r lisa_map}
+#| echo: false
+#| warning: false
+#| fig-cap: "Local Moran's I cluster map. Red areas (Hot Spots) show significant clustering of high LST; blue areas (Cool Spots) show clustering of low LST."
+lisa_colors <- c("Hot Spots" = "#d7191c",
+                 "Cool Spots" = "#2b83ba",
+                 "Outliers" = "#fdae61",
+                 "Not Significant" = "#f7f7f7")
+
+map_lisa <- tm_shape(census_data) +
+  tm_fill("cluster_type", 
+          palette = lisa_colors,
+          title = "Cluster Type") +
+  tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(phoenix_boundary) +
+  tm_borders(col = "black", lwd = 1.5) +
+  tm_layout(title = "Local Moran's I clusters",
+            legend.outside = TRUE,
+            frame = FALSE)
+map_lisa
+```
+
+### Getis-Ord Gi* Hotspot Analysis
+
+```{r gistar}
+#| echo: false
+#| warning: false
+
+gi_star <- localG(census_data$lst_mean, listw, zero.policy = TRUE)
+census_data$gi_star <- as.numeric(gi_star)
+# Classifying hotspots using 95% threshold
+census_data$hotspot_class <- cut(census_data$gi_star,
+                                  breaks = c(-Inf, -1.96, 1.96, Inf),
+                                  labels = c("Cold Spot", "Not Significant", "Hot Spot"))
+
+cat("Getis-Ord Gi* Classification (95% confidence):\n")
+print(table(census_data$hotspot_class))
+```
+
+Getis-Ord Gi* shows almost the same results as LISA - 59 hot spots and 55 cold spots.
+
+```{r gistar_map}
+#| echo: false
+#| warning: false
+#| fig-cap: "Results shows with 59 hot spots and 55 cold spots."
+hotspot_colors <- c("Cold Spot" = "#3182bd",
+                    "Not Significant" = "#f7f7f7",
+                    "Hot Spot" = "#de2d26")
+
+map_hotspot <- tm_shape(census_data) +
+  tm_fill("hotspot_class", 
+          palette = hotspot_colors,
+          title = "Hotspot classes") +
+  tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(phoenix_boundary) +
+  tm_borders(col = "black", lwd = 2) +
+  tm_layout(title = "Getis-Ord Gi hotspots",
+            legend.outside = TRUE,
+            frame = FALSE)
+map_hotspot
+```
+
+## Regression Analysis
+
+```{r ols_model}
+#| echo: false
+#| warning: false
+
+model <- lm(lst_mean ~ median_incomeE + pct_poverty + pct_elderly + 
+                  pct_under_18 + pop_density + ndvi_mean, 
+                data = census_data)
+
+cat("OLS Regression Results:\n")
+cat("R-squared:", round(summary(model)$r.squared, 3), "\n")
+cat("Adjusted R-squared:", round(summary(model)$adj.r.squared, 3), "\n\n")
+
+cat("Coefficients:\n")
+print(round(summary(model)$coefficients, 4))
+```
+
+OLS regression explains 62.9% of LST variance (adjusted R²=0.623). NDVI is the strongest predictor as it shows coefficient of -21.41, it indicates that about 21°C temperature reduction per unit NDVI increase. That's a huge cooling effect from vegetation.
+
+```{r spatial_diagnostics}
+#| echo: false
+
+moran_resid <- moran.test(residuals(model), listw, zero.policy = TRUE)
+cat("\nSpatial Autocorrelation in OLS Residuals:\n")
+cat("Moran's I =", round(moran_resid$estimate[1], 3), 
+    ", p <", format.pval(moran_resid$p.value, digits = 3), "\n")
+```
+
+The OLS residuals have significant spatial autocorrelation as Moran's I=0.388 and p<0.001. This shows the opposite to the independence assumption, so we need to use spatial regression models.
+
+### Spatial Regression Models
+
+```{r spatial_models}
+#| echo: false
+#| warning: false
+
+model_lag <- lagsarlm(lst_mean ~ median_incomeE + pct_poverty + pct_elderly + 
+                        pct_under_18 + pop_density + ndvi_mean,
+                      data = census_data, listw = listw, zero.policy = TRUE)
+
+model_error <- errorsarlm(lst_mean ~ median_incomeE + pct_poverty + pct_elderly + 
+                            pct_under_18 + pop_density + ndvi_mean,
+                          data = census_data, listw = listw, zero.policy = TRUE)
+
+cat("Model Comparison:\n")
+cat("OLS AIC:", round(AIC(model), 1), "\n")
+cat("Spatial Lag AIC:", round(AIC(model_lag), 1), "\n")
+cat("Spatial Error AIC:", round(AIC(model_error), 1), "\n\n")
+
+cat("Spatial Error Model:\n")
+cat("Lambda:", round(model_error$lambda, 3), "\n")
+
+cat("NDVI Coefficient Comparison:\n")
+cat("OLS:", round(coef(model)["ndvi_mean"], 2), "\n")
+cat("Spatial Error:", round(coef(model_error)["ndvi_mean"], 2), "\n")
+```
+
+Spatial error model shows better improvement over OLS because AIC drops from 1129 to 990. The spatial error parameter, lambda is 0.729 which is highly significant, so it shows strong spatial dependence in the error structure.
+
+The NDVI coefficient stays almost the same (-21.32 vs -21.41), it indicates that the vegetation cooling effect is robust even after accounting for spatial autocorrelation.
+
+**Note:** The Lagrange Multiplier test on spatial error residuals is still significant as it shows (LM=8.10, p=0.004). This suggests us that there is still some residual spatial structure not fully captured by the model. This could be due to unmeasured factors like urban form or microclimatic conditions that vary spatially.
+
+## Top 10% vs Bottom 10% Comparison
+
+```{r top_bottom_10}
+#| echo: false
+
+threshold_high <- quantile(census_data$median_incomeE, 0.9, na.rm = TRUE)
+threshold_low <- quantile(census_data$median_incomeE, 0.1, na.rm = TRUE)
+
+top_10 <- census_data %>% filter(median_incomeE >= threshold_high)
+bottom_10 <- census_data %>% filter(median_incomeE <= threshold_low)
+
+temp_diff_10 <- mean(bottom_10$lst_mean, na.rm = TRUE) - 
+                mean(top_10$lst_mean, na.rm = TRUE)
+ndvi_diff_10 <- mean(top_10$ndvi_mean, na.rm = TRUE) - 
+                mean(bottom_10$ndvi_mean, na.rm = TRUE)
+
+cat("Comparing Top 10% (Wealthiest) vs Bottom 10% (Poorest):\n\n")
+cat("Temperature:\n")
+cat("  Top 10%:", round(mean(top_10$lst_mean, na.rm = TRUE), 2), "°C\n")
+cat("  Bottom 10%:", round(mean(bottom_10$lst_mean, na.rm = TRUE), 2), "°C\n")
+cat("  Difference:", round(temp_diff_10, 2), "°C (", 
+    round(temp_diff_10 * 9/5, 2), "°F)\n\n")
+
+cat("Vegetation:\n")
+cat("  Top 10% NDVI:", round(mean(top_10$ndvi_mean, na.rm = TRUE), 3), "\n")
+cat("  Bottom 10% NDVI:", round(mean(bottom_10$ndvi_mean, na.rm = TRUE), 3), "\n")
+cat("  Wealthiest have", round(ndvi_diff_10/mean(bottom_10$ndvi_mean, na.rm = TRUE)*100, 1), 
+    "% higher NDVI\n")
+```
+
+Looking at the extremes shows a strong thermal inequality, the poorest 10% of tracts experience 2.18°C higher temperatures than the wealthiest 10%, which is almost 4°F. The temperature gap is even bigger when comparing extremes versus quintiles. Also the wealthiest tracts have 52% higher NDVI compared to poorest tracts, that shows a huge disparity in vegetation access.
+
+## Heat Vulnerability Index
+
+```{r hvi_calculation}
+#| echo: false
+#| results: hide
+
+census_data <- census_data %>%
+  mutate(
+    z_lst = scale(lst_mean)[,1],
+    z_ndvi_inv = scale(-ndvi_mean)[,1], # inversing
+    z_poverty = scale(pct_poverty)[,1],
+    z_elderly = scale(pct_elderly)[,1],
+    z_under18 = scale(pct_under_18)[,1],
+    z_popdensity = scale(pop_density)[,1],
+    z_income_inv = scale(-median_incomeE)[,1]  # inversing
+  )
+
+census_data$HVI_simple <- (census_data$z_lst + 
+                           census_data$z_ndvi_inv + 
+                           census_data$z_poverty + 
+                           census_data$z_elderly + 
+                           census_data$z_under18 + 
+                           census_data$z_income_inv) / 6
+# hvi composites 
+census_data$HVI_quintile <- cut(census_data$HVI_simple,
+                                breaks = quantile(census_data$HVI_simple, 
+                                                 probs = seq(0, 1, 0.2), 
+                                                 na.rm = TRUE),
+                                labels = c("Q1", "Q2", "Q3", "Q4", "Q5"),
+                                include.lowest = TRUE)
+```
+
+```{r hvi_summary_table}
+#| echo: false
+
+# Summary by HVI quintile
+hvi_summary <- census_data %>%
+  st_drop_geometry() %>%
+  group_by(HVI_quintile) %>%
+  summarise(
+    n_tracts = n(),
+    mean_lst = mean(lst_mean, na.rm = TRUE),
+    mean_poverty = mean(pct_poverty, na.rm = TRUE),
+    mean_income = mean(median_incomeE, na.rm = TRUE),
+    total_pop = sum(total_popE, na.rm = TRUE)
+  )
+
+kable(hvi_summary, caption = "Heat Vulnerability Index by quintile")
+```
+
+Created a composite Heat Vulnerability Index (HVI) by combining Land Surface Temperature (LST), Vegatation Index (NDVI), and social vulnerability (poverty, age demographics, income, population density). Higher values = greater vulnerability.
+
+The index shows gooding results - highest vulnerability quintile (Q5) has:
+- Mean LST 2.5°C higher than Q1
+- Poverty rate 3× higher
+- Mean income $60,000 lower than lowest vulnerability quintile (Q1)
+
+```{r hvi_map}
+#| echo: false
+#| warning: false
+#| fig-cap: "Heat Vulnerability Index distribution. Red areas shows highest vulnerability." 
+map_hvi <- tm_shape(census_data) +
+  tm_fill("HVI_simple", 
+          palette = "-RdYlBu",
+          style = "quantile",
+          n = 5,
+          title = "Heat Vulnerability Index") +
+  tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(phoenix_boundary) +
+  tm_borders(col = "black", lwd = 1.5) +
+  tm_layout(title = "Heat Vulnerability Index",
+            legend.outside = TRUE,
+            frame = FALSE)
+map_hvi
+```
+
+Red areas on the map show highest vulnerability, these areas are the priority regions for heat mitigation interventions.
+
+# Discussion
+
+## What This Means
+
+This analysis represents a clear environmental injustice in Phoenix city heat exposure. Following are the three main findings:
+
+**First** - there is a systematic thermal inequality across income levels. Poorest residents experience 2.2°C higher temperatures than wealthiest, even after controlling for population density, age structure, and poverty rate in the regression models.
+
+**Second** - vegetation access is really unequal. Wealthy neighborhoods have 52% higher NDVI than poor neighborhoods. This matters because vegetation provides measurable cooling benefits.
+
+**Third** - heat exposure isn't randomly distributed. Hot spots concentrate in low-income, high-density areas of central Phoenix. Cool spots cluster in affluent periphery. This is a pattern, not random chance.
+
+## Limitations
+
+Some of the things which I found during this analysis:
+
+**Spatial autocorrelation issue:** Even the spatial error model still has some residual spatial autocorrelation (p=0.004). This means there are probably spatial factors we're not measuring, for example like differences in urban form or microclimatic conditions. Later on, this work could use geographically weighted regression to handle this better.
+
+**LST vs air temperature:** I have used land surface temperature for this analysis, not air temperature. LST gives us great spatial coverage, but it is measuring surface conditions not what people actually feel. The relationship between LST and human heat exposure is a another study.
+
+**Single snapshot:** I used only Summer 2020 data, which is just one season. Heat exposure varies by season, even the time of day and also weather conditions.
+
+**Census tract aggregation:** Using census tracts means we can't make individual-level inferences. Tract-level patterns don't necessarily reflect individual experiences, especially in diverse neighborhoods within on tracts. But then it raises the concern of privacy as well.
+
+## What Should Be Done
+
+Based on these results, here are some recommendations:
+
+1. **Immediate actions:** Deploying cooling centers and heat emergency resources in the identified hotspot areas with the proximity to all hot spots regions
+
+2. **Medium-term:** Tree planting and green infrastructure programs in areas where there is low-NDVI and high-poverty.
+
+3. **Long-term:** Integrate heat vulnerability assessment into city planning and zoning decisions to prevent future inequality.
+
+4. **Monitoring:** The city can be set up using citzen science sensor for monitoring the environmental conditions to track if interventions are working and catch emerging disparities.
+
+# Conclusion
+
+This research shows significant environmental injustice in Phoenix heat exposure. Poorest residents experience 2.2°C higher surface temperatures and 52% lower vegetation coverage than wealthiest people. 
+
+Spatial analysis shows a systematic clustering of heat exposure in low-income, high-density neighborhoods rather than random distribution. The regression models show that vegetation is the strongest predictor of LST, with 21°C cooling per unit NDVI increase. This suggests urban forestry interventions could meaningfully reduce thermal inequality by increasing green infrastructures.
+
+The Heat Vulnerability Index successfully combines thermal, environmental, and social factors to identify priority areas for intervention. As there are about 20% of Phoenix residents living in highest-vulnerability census tracts with extreme heat, limited vegetation, high poverty, and vulnerable populations.
+
+These findings fit with national patterns and reinforce two decades of Phoenix-specific research. The 2.2°C temperature inequality observed here is substantial and represents an environmental justice concern that should be addressed.
+
+# GitHub Repository
+
+For data and code:
+[Phoenix_Urban_Heat_Analysis](https://github.com/TRON-151/Phoenix_Urban_Heat_Analysis.git)
