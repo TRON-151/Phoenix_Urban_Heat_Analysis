@@ -25,7 +25,9 @@ This project maps **Heat Vulnerability Index (HVI)** across Phoenix's 387 census
 
 ## Libraries used
 
-`Python` `R` `sf` `terra` `ggplot2` `leaflet` `rgee` · `Shiny`
+`Python` `geemap` `geopandas` 
+
+`R` `sf` `terra` `ggplot2` `tidycensus` `tidyverse`
 
 ---
 *Analysis by Ousama Bin Zamir < Feburary 2025>* 
