@@ -1,0 +1,195 @@
+---
+    title: Phoenix City Heat Island Analysis
+    subtitle: Data Accessing
+    author: Ousama Bin Zamir
+    data: 2026-02-27
+---
+
+# Introduction
+
+This document shows how the data was acquired. Python is being used for acquiring the data via GEE (Google Earth Engine) and R for census data via US Census Bureau API
+
+# Initial 
+```{python setup}
+import sys
+import ee
+import geemap
+import geopandas as gpd
+import os
+```
+
+For authentication, the ee will allow you to config your Google Cloud project in browser and you will get a token. The token needs to be entered in the terminal manually.
+
+```{python auth_init}
+ee.Authenticate()
+print("GEE Authentication Complete")
+ee.Initialize()
+```
+
+# AOI and Dates Defining 
+
+```{python AOI_dates}
+# City of Phoenix coordinates
+phoenix_coords = [
+    [-112.469788, 33.192731],  
+    [-112.469788, 33.986641],  
+    [-111.816101, 33.986641],  
+    [-111.816101, 33.192731], 
+    [-112.469788, 33.192731]  
+]
+phx_bbox = ee.Geometry.Polygon(phoenix_coords)
+
+# dates have been taken from first of May till the end of July
+START_DATE = '2020-05-01'
+END_DATE = '2020-07-31'
+```
+
+# Raster Data
+## LST Data
+
+For LST data the landsat data collection is being used.
+
+```{python lst_data}
+# so here the landsat 8 collection is being selected from Tier 1 Level 2.
+landsat = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2') \
+    .filterBounds(phx_bbox) \
+    .filterDate(START_DATE, END_DATE) \
+    .filter(ee.Filter.lt('CLOUD_COVER', 20))
+
+# So the data is ST_B10 (ST- Surface Temperatuer & B10 - band 10)
+def calculate_lst(image):
+    # converting to celsius
+    thermal = image.select('ST_B10').multiply(0.00341802).add(149.0).subtract(273.15)
+    return thermal
+
+lst_collection = landsat.map(calculate_lst)
+# taking the median values with the phoenix city bbox
+lst_median = lst_collection.median().clip(phx_bbox)
+
+# saving lst_median as geotiff with central Arizona CRS "Epsg:2223"
+# the geotiff file is being automatically saved in your Google drive
+export_lst = ee.batch.Export.image.toDrive(
+    image=lst_median,
+    description='PHOX_LST_Landsat8_Summer2020',
+    folder='PHOX_Heat_Analysis',
+    fileFormat='GeoTIFF',
+    region=phx_bbox,
+    scale=30,
+    maxPixels=1e13,
+    crs='EPSG:2223'
+)
+export_lst.start()
+```
+
+## NDVI Data
+
+For vegetation index (NDVI) data the Copernicus, sentinel 2 data collection is being used with less than 20% cloud cover threshold.
+
+```{python ndvi}
+sentinel = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
+    .filterBounds(phx_bbox) \
+    .filterDate(START_DATE, END_DATE) \
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) 
+
+def calculate_ndvi(image):
+    ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+    return ndvi
+
+ndvi_collection = sentinel.map(calculate_ndvi)
+ndvi_median = ndvi_collection.median().clip(phx_bbox)
+
+# saving vegetation index as geotiff with central Arizona CRS "Epsg:2223"
+# the geotiff file is being automatically saved in your Google drive
+
+export_ndvi = ee.batch.Export.image.toDrive(
+    image=ndvi_median,
+    description='PHOX_NDVI_sentinel_Summer2020',
+    folder='PHOX_Heat_Analysis',
+    fileFormat='GeoTIFF',
+    region=phx_bbox,
+    scale=10,
+    maxPixels=1e13,
+    crs='EPSG:2223'
+)
+export_ndvi.start()
+```
+
+# Census Data
+
+## libraries
+
+```{r setup}
+library(tidycensus)
+library(sf)
+library(dplyr)
+```
+
+For Census Data first you need to register on US Census Bureau API site and after verification from their side you will recieve a API key.
+```{r api_key}
+census_api_key("api_key_here", install = TRUE, overwrite = TRUE)
+# now this key will be automatically saved in your .Renviron file
+```
+
+We define all the variable we need and fetch the data
+```{r census_data}
+# necessary variable list 
+variables_list = c(
+    total_pop = "B01003_001",       # Total population
+    median_income = "B19013_001",     # Median household income
+    poverty_pop = "B17001_002",     # Population below poverty
+    # lets add a fertility related variable as well
+    births_past_year = "B13016_002" # Women who had a birth in past 12 months
+    # lets add different age group
+    paste0("B01001_", sprintf("%03d", c(
+        1,    # this total population
+        3:6,  # males under 5 till 15-17
+        7:19,  # males from 18-19 age till 60-61
+        20:25,  # males from 62-64 years old till 85+ age
+        27:30, # females under 5 till 15-17
+        31:43, # females from 18-19 age till 60-61
+        44:49   # females from 62-64 years old till 85+ age 
+    )))
+  )
+
+phoenix_census <- get_acs(
+  geography = "tract",
+  state = "AZ",
+  county = "Maricopa",
+  variables = variables_list,
+  year = 2020,                          
+  survey = "acs5",      # this is a 5-year estimates
+  geometry = TRUE,                     
+  output = "wide"                      
+)
+
+# lets mutate the data a according to our analysis need
+phoenix_census <- phoenix_census %>%
+    mutate(
+        # both male and female under 18
+        age_under_18 = rowSums(select(., ends_with(c("003E", "004E", "005E", "006E", 
+        "027E", "028E", "029E", "030E")))),
+        # population between 18 till 64
+        age_18_64 = rowSums(select(., ends_with(paste0(sprintf("%03d", 7:19), "E")))) +
+                    rowSums(select(., ends_with(paste0(sprintf("%03d", 31:43), "E")))),
+        # population above 64 (elderly population)
+        age_65_plus = rowSums(select(., ends_with(paste0(sprintf("%03d", 20:25), "E")))) +
+                    rowSums(select(., ends_with(paste0(sprintf("%03d", 44:49), "E")))),
+        # calculating percentages
+        pct_poverty = (poverty_popE / total_popE) * 100,
+        pct_under_18 = (age_under_18 / total_popE) * 100,
+        pct_elderly = (age_65_plus / total_popE) * 100,
+        # Crude birth rate per 1,000 population
+        crude_birth_rate = (births_past_yearE / total_popE) * 1000,
+
+        # verify it 
+        total_check = age_under_18 + age_18_64 + age_65_plus
+    )%>%
+    select(GEOID, NAME, geometry, total_popE, median_incomeE,
+         age_under_18, age_18_64, age_65_plus, pct_poverty,
+         pct_under_18, pct_elderly, crude_birth_rate)
+
+phoenix_census <- st_transform(phoenix_census, "EPSG:2223")
+
+# Now we have the necessary data for the county Maricopa in which phoenix city is located 
+```
+
