@@ -1,6 +1,6 @@
 # Phoenix Urban Heat Analysis
 
-The Repo contains the spatio-temporal analysis of urban heat vulnerability for the City of Phoenix, AZ. The analysis is done by combining Land Surface Temperature (LST), NDVI vegetation data, and census demographics, in order to identity the heat-vulnerable regions.
+This repository contains the spatio data analysis of urban heat vulnerability for the City of Phoenix, AZ. The analysis is done by combining Land Surface Temperature (LST), NDVI vegetation data, and census demographics, in order to identity the heat-vulnerable regions.
 
 ## About
 
