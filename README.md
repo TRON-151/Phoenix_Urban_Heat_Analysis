@@ -12,7 +12,7 @@ Phoenix is one of the hottest major cities in the US, and it has been studied fo
 
 ## Key Findings
 
-The full write-up is in [`Project.Qmd`](Project.Qmd), but here are the main takeaways:
+The full write-up is in [`Project.Qmd`](Project.qmd), but here are the main takeaways:
 
 - **Heat is unequal.** The poorest neighborhoods run about **2.2°C hotter (~4°F)** than the wealthiest ones, even after controlling for population density, age structure, and poverty in the regression models.
 - **Green space is unequal too.** Wealthier tracts have about **52% more vegetation (NDVI)** than the poorest tracts.
