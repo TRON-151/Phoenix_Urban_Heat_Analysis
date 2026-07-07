@@ -33,7 +33,7 @@ The full write-up is in [`Project.Qmd`](Project.Qmd), but here are the main take
 
 The workflow uses two languages, Python for pulling the raster data and R for everything else. The steps roughly go like this:
 
-1. **Data acquisition** — LST and NDVI are exported from Google Earth Engine (summer 2020, <20% cloud cover), and the census variables come from the US Census Bureau API. All of this is documented in [`data_access.Qmd`](data_access.Qmd).
+1. **Data acquisition** — LST and NDVI are exported from Google Earth Engine (summer 2020, <20% cloud cover), and the census variables come from the US Census Bureau API. All of this is documented in [`data_access.qmd`](data_access.qmd).
 2. **Prep and zonal stats** — Everything is reprojected to EPSG:2223 (Arizona Central State Plane), then mean LST and NDVI are extracted per census tract using `exactextractr`.
 3. **Exploration** — Temperature and vegetation distributions, plus income-quintile breakdowns to see how the richest and poorest tracts compare.
 4. **Correlation** — Income vs temperature, income vs vegetation, and the vegetation cooling effect, tied together in a correlation matrix.
